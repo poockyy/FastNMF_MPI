@@ -1,10 +1,12 @@
 #include <mpi.h>
 #include <string.h>
 #include <vector>
-#include <RcppEigen.h>
+
 using namespace std;
 //#include <FNMF.h> 
 
+//[[Rcpp::depends(RcppEigen)]]
+#include<RcppEigen.h>
 /*
 
 RUN WITH
@@ -29,7 +31,8 @@ Tasks:
 
 int main(int argc, char** argv) {
 
-
+    Eigen::MatrixXd chunk;
+  
 
     // Initialize MPI Environment
     MPI_Init(&argc, &argv);
@@ -45,8 +48,8 @@ int main(int argc, char** argv) {
     /*------------------------------------------------------------------------------------------------*/
 
     // Read in chunks of A to each process
-    if(worldRank != 0){ //rank of 0 is master thread
-        vector<Eigen::MatrixXd>* chunks; 
+    if(worldRank == 0){ //rank of 0 is master thread
+        vector<Eigen::MatrixXd>* chunks;
         for(int i = 0; i < worldSize; i++){ //master thread sends all other threads the chunks
             MPI_Ssend(chunks[i], 1, MPI_BYTE, i, 0, MPI_COMM_WORLD);
         }
@@ -72,19 +75,24 @@ int main(int argc, char** argv) {
     */
 
 
-    //Gets the transpose
+    //Gets the transpose and sends columns to their righful node
     if(worldRank != 0){
         Eigen::MatrixXd newChunk = AAt(chunk);
-        Eigen::VectorXd tColl;
+        Eigen::VectorXd tCol; //the received column
+        int col = 0;
+        while(col < newChunk.cols()){
+            //Sends out as many columns as there are ranks. I.e 8 cores committed to this 
+            //will send out 8 columns of the transposed matrix at a time
+            for(col = 0; col < worldSize; col++){
 
-        //its not going to be column...unless we either split chunks further or have 100 million cores
-        for(int col = 0; col < newChunk.cols(), col++){
-            MPI_Ssend(newChunk.col(col), 1, MPI_BYTE, col, 0, MPI_COMM_WORLD );  // distribute transpose rows to correct node
-        }
-        MPI_Recv(tCol, 1, MPI_BYTE, worldRank, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                 // distribute transpose rows to correct node. Each column goes to a specific world rank
+                MPI_Ssend(newChunk.col(col), 1, MPI_BYTE, col, 0, MPI_COMM_WORLD); 
+            }
 
+            //That worldRank picks up that column to use in the next step.
+            MPI_Recv(&tCol, 1, MPI_BYTE, worldRank, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
-
+      }
     }
 
     
@@ -116,14 +124,16 @@ int main(int argc, char** argv) {
 
     // Free MPI Environment
     MPI_Finalize();
+    
+    
+    Eigen::MatrixXd AAt(const Eigen::MatrixXd& A) {
+      Eigen::MatrixXd AAt = Eigen::MatrixXd::Zero(A.rows(), A.rows());
+      AAt.selfadjointView<Eigen::Lower>().rankUpdate(A);
+      AAt.triangularView<Eigen::Upper>() = AAt.transpose();
+      AAt.diagonal().array() += 1e-15;  // for numerical stability during coordinate descent NNLS
+      return AAt;
+    }
 
 }
 
 
-Eigen::MatrixXd AAt(const Eigen::MatrixXd& A) {
-    Eigen::MatrixXd AAt = Eigen::MatrixXd::Zero(A.rows(), A.rows());
-    AAt.selfadjointView<Eigen::Lower>().rankUpdate(A);
-    AAt.triangularView<Eigen::Upper>() = AAt.transpose();
-    AAt.diagonal().array() += 1e-15;  // for numerical stability during coordinate descent NNLS
-    return AAt;
-}
